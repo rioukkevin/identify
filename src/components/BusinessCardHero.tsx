@@ -1,0 +1,655 @@
+"use client";
+
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import {
+  AdaptiveDpr,
+  RoundedBox,
+  Sparkles,
+  useProgress,
+  useTexture,
+} from "@react-three/drei";
+import * as THREE from "three";
+
+type OrientationState = {
+  beta: number | null;
+  gamma: number | null;
+  alpha: number | null;
+};
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function damp(current: number, target: number, lambda: number, dt: number) {
+  return current + (target - current) * (1 - Math.exp(-lambda * dt));
+}
+
+function useDeviceOrientation() {
+  const [orientation, setOrientation] = useState<OrientationState>({
+    beta: null,
+    gamma: null,
+    alpha: null,
+  });
+  const [permissionState, setPermissionState] = useState<
+    "unknown" | "granted" | "denied" | "not_required"
+  >("unknown");
+
+  const isIOSPermissionAPI =
+    typeof window !== "undefined" &&
+    typeof (window as unknown as { DeviceOrientationEvent?: unknown }).DeviceOrientationEvent !==
+      "undefined" &&
+    typeof (DeviceOrientationEvent as unknown as { requestPermission?: unknown }).requestPermission ===
+      "function";
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const onDeviceOrientation = (e: DeviceOrientationEvent) => {
+      setOrientation({
+        beta: typeof e.beta === "number" ? e.beta : null,
+        gamma: typeof e.gamma === "number" ? e.gamma : null,
+        alpha: typeof e.alpha === "number" ? e.alpha : null,
+      });
+    };
+
+    const startListening = () => {
+      window.addEventListener("deviceorientation", onDeviceOrientation, { passive: true });
+      return () => window.removeEventListener("deviceorientation", onDeviceOrientation);
+    };
+
+    if (!isIOSPermissionAPI) {
+      // Non-iOS Safari: permission is typically not required, start immediately.
+      setPermissionState("not_required");
+      const stop = startListening();
+      return () => stop();
+    }
+
+    // iOS Safari: wait for explicit user gesture to request permission.
+    setPermissionState("unknown");
+    return;
+  }, [isIOSPermissionAPI]);
+
+  const requestPermission = useCallback(async () => {
+    if (!isIOSPermissionAPI) return true;
+    try {
+      const result = await (
+        DeviceOrientationEvent as unknown as { requestPermission: () => Promise<"granted" | "denied"> }
+      ).requestPermission();
+      if (result === "granted") {
+        setPermissionState("granted");
+        const onDeviceOrientation = (e: DeviceOrientationEvent) => {
+          setOrientation({
+            beta: typeof e.beta === "number" ? e.beta : null,
+            gamma: typeof e.gamma === "number" ? e.gamma : null,
+            alpha: typeof e.alpha === "number" ? e.alpha : null,
+          });
+        };
+        window.addEventListener("deviceorientation", onDeviceOrientation, { passive: true });
+        return true;
+      }
+      setPermissionState("denied");
+      return false;
+    } catch {
+      setPermissionState("denied");
+      return false;
+    }
+  }, [isIOSPermissionAPI]);
+
+  const isSupported =
+    typeof window !== "undefined" && "DeviceOrientationEvent" in window && window.isSecureContext;
+
+  return { orientation, isSupported, permissionState, requestPermission, isIOSPermissionAPI };
+}
+
+function LoadingBridge({
+  onProgress,
+  onLoaded,
+}: {
+  onProgress: (p: number) => void;
+  onLoaded: () => void;
+}) {
+  const { progress, active } = useProgress();
+  const doneRef = useRef(false);
+
+  useEffect(() => {
+    onProgress(progress);
+    if (!active && progress >= 100 && !doneRef.current) {
+      doneRef.current = true;
+      onLoaded();
+    }
+  }, [active, onLoaded, onProgress, progress]);
+
+  return null;
+}
+
+function Card({
+  flipped,
+  interactive,
+  tiltStrength,
+  deviceTilt,
+  onToggleFlip,
+  intro,
+}: {
+  flipped: boolean;
+  interactive: boolean;
+  tiltStrength: number;
+  deviceTilt: { x: number; y: number };
+  onToggleFlip: () => void;
+  intro: { ready: boolean; t: number };
+}) {
+  const group = useRef<THREE.Group>(null);
+  const edgeMaterial = useRef<THREE.MeshPhysicalMaterial>(null);
+  const { pointer, viewport } = useThree();
+
+  const frontMap = useTexture("/back.webp");
+  const backMap = useTexture("/front2.png");
+  const [frontMapFitted, setFrontMapFitted] = useState<THREE.Texture | null>(null);
+  const [backMapFitted, setBackMapFitted] = useState<THREE.Texture | null>(null);
+
+  const { faceGeo, cardW, cardH, thickness, cornerR } = useMemo(() => {
+    const cardW = 1.75;
+    const cardH = 1.0;
+    const thickness = 0.04;
+    const cornerR = 0.12;
+
+    const w = cardW;
+    const h = cardH;
+    const r = Math.min(cornerR, w * 0.5, h * 0.5);
+
+    const shape = new THREE.Shape();
+    shape.moveTo(-w / 2 + r, -h / 2);
+    shape.lineTo(w / 2 - r, -h / 2);
+    shape.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + r);
+    shape.lineTo(w / 2, h / 2 - r);
+    shape.quadraticCurveTo(w / 2, h / 2, w / 2 - r, h / 2);
+    shape.lineTo(-w / 2 + r, h / 2);
+    shape.quadraticCurveTo(-w / 2, h / 2, -w / 2, h / 2 - r);
+    shape.lineTo(-w / 2, -h / 2 + r);
+    shape.quadraticCurveTo(-w / 2, -h / 2, -w / 2 + r, -h / 2);
+
+    const faceGeo = new THREE.ShapeGeometry(shape, 48);
+    // Ensure the texture maps perfectly to the card face (0..1 UVs), avoiding
+    // default ShapeGeometry UV quirks that can cause cropping/stretching.
+    {
+      const pos = faceGeo.getAttribute("position") as THREE.BufferAttribute;
+      const uv = new Float32Array(pos.count * 2);
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        const u = (x + w / 2) / w;
+        const v = (y + h / 2) / h;
+        uv[i * 2 + 0] = u;
+        uv[i * 2 + 1] = v;
+      }
+      faceGeo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+    }
+    faceGeo.computeVertexNormals();
+
+    return { faceGeo, cardW, cardH, thickness, cornerR };
+  }, []);
+
+  const fitScale = useMemo(() => {
+    // viewport.{width,height} are in world-units at z=0 for the current camera.
+    // We fit the *rotating* card with a generous margin, especially in portrait.
+    const portrait = viewport.width < viewport.height;
+    const margin = portrait ? 1.55 : 1.35; // more headroom in portrait to avoid side cropping when tilted
+    const sW = viewport.width / (cardW * margin);
+    const sH = viewport.height / (cardH * margin);
+    return clamp(Math.min(sW, sH), 0.6, 1.25);
+  }, [cardH, cardW, viewport.height, viewport.width]);
+
+  useEffect(() => {
+    // Fit textures into the card aspect ratio without deformation.
+    // If the image aspect doesn't match the card, we letterbox with a
+    // background color sampled from the image itself (avoids ugly edge-smear).
+    const targetAspect = cardW / cardH;
+
+    const makeFitted = (src: THREE.Texture) => {
+      const img = src.image as
+        | HTMLImageElement
+        | HTMLCanvasElement
+        | ImageBitmap
+        | OffscreenCanvas
+        | undefined;
+      if (!img) return null;
+
+      // Best-effort get dimensions across image sources.
+      const w =
+        "naturalWidth" in img
+          ? img.naturalWidth
+          : "width" in img
+            ? (img.width as number)
+            : 0;
+      const h =
+        "naturalHeight" in img
+          ? img.naturalHeight
+          : "height" in img
+            ? (img.height as number)
+            : 0;
+      if (!w || !h) return null;
+
+      const outW = 1024;
+      const outH = Math.max(1, Math.round(outW / targetAspect));
+      const canvas = document.createElement("canvas");
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+
+      // Sample a 1x1 average-ish color from the image for the letterbox fill.
+      const sample = document.createElement("canvas");
+      sample.width = 1;
+      sample.height = 1;
+      const sctx = sample.getContext("2d");
+      if (sctx) {
+        sctx.drawImage(img as CanvasImageSource, 0, 0, 1, 1);
+        const [r, g, b] = sctx.getImageData(0, 0, 1, 1).data;
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+      } else {
+        ctx.fillStyle = "#0b0f17";
+      }
+      ctx.fillRect(0, 0, outW, outH);
+
+      const imgAspect = w / h;
+      let drawW = outW;
+      let drawH = outH;
+      if (imgAspect > targetAspect) {
+        // Image is wider than the card: fit by width.
+        drawW = outW;
+        drawH = Math.round(outW / imgAspect);
+      } else {
+        // Image is taller than the card: fit by height.
+        drawH = outH;
+        drawW = Math.round(outH * imgAspect);
+      }
+      const dx = Math.round((outW - drawW) / 2);
+      const dy = Math.round((outH - drawH) / 2);
+      ctx.drawImage(img as CanvasImageSource, dx, dy, drawW, drawH);
+
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = true;
+      tex.needsUpdate = true;
+      return tex;
+    };
+
+    const f = makeFitted(frontMap);
+    const b = makeFitted(backMap);
+    if (f) setFrontMapFitted(f);
+    if (b) setBackMapFitted(b);
+
+    return () => {
+      f?.dispose();
+      b?.dispose();
+    };
+  }, [backMap, cardH, cardW, frontMap]);
+
+  useEffect(() => {
+    frontMap.colorSpace = THREE.SRGBColorSpace;
+    backMap.colorSpace = THREE.SRGBColorSpace;
+    frontMap.anisotropy = 8;
+    backMap.anisotropy = 8;
+    frontMap.wrapS = frontMap.wrapT = THREE.ClampToEdgeWrapping;
+    backMap.wrapS = backMap.wrapT = THREE.ClampToEdgeWrapping;
+  }, [backMap, frontMap]);
+
+  useFrame((state, dt) => {
+    const g = group.current;
+    if (!g) return;
+
+    const flipTarget = flipped ? Math.PI : 0;
+    const baseHover = Math.sin(state.clock.elapsedTime * 0.9) * 0.03;
+    const baseRoll = Math.sin(state.clock.elapsedTime * 0.7) * 0.03;
+
+    const pointerTiltX = -pointer.y * tiltStrength;
+    const pointerTiltY = pointer.x * tiltStrength;
+
+    const tiltX = deviceTilt.x !== 0 ? deviceTilt.x * tiltStrength : pointerTiltX;
+    const tiltY = deviceTilt.y !== 0 ? deviceTilt.y * tiltStrength : pointerTiltY;
+
+    // Intro animation: float in + scale up.
+    const targetScale = (intro.ready ? 1.0 : 0.88) * fitScale;
+    g.scale.x = damp(g.scale.x, targetScale, 10, dt);
+    g.scale.y = damp(g.scale.y, targetScale, 10, dt);
+    g.scale.z = damp(g.scale.z, targetScale, 10, dt);
+    g.position.y = damp(g.position.y, intro.ready ? baseHover - 0.03 : -0.22, 6, dt);
+    g.position.z = damp(g.position.z, intro.ready ? 0 : -0.55, 6, dt);
+
+    g.rotation.y = damp(g.rotation.y, flipTarget + tiltY * 0.25, 10, dt);
+    g.rotation.x = damp(g.rotation.x, tiltX + baseHover * 0.15, 10, dt);
+    g.rotation.z = damp(g.rotation.z, baseRoll + pointer.x * 0.04, 10, dt);
+
+    if (edgeMaterial.current) {
+      edgeMaterial.current.emissiveIntensity = 0.22 + baseHover * 0.6;
+    }
+  });
+
+  return (
+    <group ref={group} position={[0, 0, 0]} rotation={[0.05, 0, 0]}>
+      <group
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          if (!interactive) return;
+          onToggleFlip();
+        }}
+      >
+        <RoundedBox
+          args={[cardW, cardH, thickness]}
+          radius={cornerR}
+          smoothness={10}
+          castShadow
+        >
+          <meshPhysicalMaterial
+            ref={edgeMaterial}
+            color="#0b0f17"
+            roughness={0.35}
+            metalness={0.35}
+            clearcoat={1}
+            clearcoatRoughness={0.14}
+            emissive="#0b1b34"
+            emissiveIntensity={0.22}
+          />
+        </RoundedBox>
+
+        {/* Front */}
+        <mesh
+          geometry={faceGeo}
+          position={[0, 0, thickness / 2 + 0.0015]}
+          castShadow
+        >
+          <meshPhysicalMaterial
+            map={frontMapFitted ?? frontMap}
+            roughness={0.28}
+            metalness={0.05}
+            clearcoat={1}
+            clearcoatRoughness={0.1}
+            sheen={0.5}
+            sheenRoughness={0.35}
+            sheenColor="#a7c4ff"
+          />
+        </mesh>
+
+        {/* Back */}
+        <mesh
+          geometry={faceGeo}
+          position={[0, 0, -thickness / 2 - 0.0015]}
+          rotation={[0, Math.PI, 0]}
+          castShadow
+        >
+          <meshPhysicalMaterial
+            map={backMapFitted ?? backMap}
+            roughness={0.32}
+            metalness={0.05}
+            clearcoat={1}
+            clearcoatRoughness={0.12}
+            sheen={0.45}
+            sheenRoughness={0.4}
+            sheenColor="#ffd5ff"
+          />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+function Flare({
+  tiltStrength,
+  deviceTilt,
+}: {
+  tiltStrength: number;
+  deviceTilt: { x: number; y: number };
+}) {
+  const lightRef = useRef<THREE.SpotLight>(null);
+  const { pointer } = useThree();
+  const baseX = -2.4;
+
+  useFrame((state, dt) => {
+    if (!lightRef.current) return;
+
+    const pointerTiltY = pointer.x * tiltStrength;
+    const tiltY = deviceTilt.y !== 0 ? deviceTilt.y * tiltStrength : pointerTiltY;
+
+    const targetX = baseX + tiltY * 3;
+    lightRef.current.position.x = damp(lightRef.current.position.x * 2, targetX, 8, dt);
+  });
+
+  return (
+    <spotLight
+      ref={lightRef}
+      position={[baseX, 2.2, 3.2]}
+      intensity={2.15}
+      angle={0.5}
+      penumbra={0.85}
+      color="#ffd7fa"
+    />
+  );
+}
+
+function Scene({
+  flipped,
+  interactive,
+  tiltStrength,
+  deviceTilt,
+  onToggleFlip,
+  intro,
+}: {
+  flipped: boolean;
+  interactive: boolean;
+  tiltStrength: number;
+  deviceTilt: { x: number; y: number };
+  onToggleFlip: () => void;
+  intro: { ready: boolean; t: number };
+}) {
+  return (
+    <>
+      <color attach="background" args={["#05070b"]} />
+
+      <ambientLight intensity={0.6} />
+      <hemisphereLight intensity={0.35} color="#cfe0ff" groundColor="#0a0c10" />
+      <directionalLight
+        position={[3.8, 3.2, 2.6]}
+        intensity={2.2}
+        color="#d9e8ff"
+        castShadow
+        shadow-mapSize-width={4096}
+        shadow-mapSize-height={4096}
+        shadow-camera-near={0.1}
+        shadow-camera-far={18}
+        shadow-camera-left={-1.5}
+        shadow-camera-right={1.5}
+        shadow-camera-top={1.2}
+        shadow-camera-bottom={-1.2}
+        shadow-radius={8}
+        shadow-bias={0.0005}
+        shadow-normalBias={0.02}
+      />
+      <Flare tiltStrength={tiltStrength} deviceTilt={deviceTilt} />
+      <pointLight position={[0, 0.25, 2.4]} intensity={1.15} color="#8fb7ff" />
+
+      <Sparkles
+        count={36}
+        size={2.2}
+        speed={0.25}
+        opacity={0.22}
+        scale={[6.5, 3.5, 2.2]}
+        position={[0, 0.25, 0.8]}
+        color="#b7d2ff"
+      />
+
+      <Card
+        flipped={flipped}
+        interactive={interactive}
+        tiltStrength={tiltStrength}
+        deviceTilt={deviceTilt}
+        onToggleFlip={onToggleFlip}
+        intro={intro}
+      />
+    </>
+  );
+}
+
+function ResponsiveCamera() {
+  const { camera, size } = useThree();
+
+  useEffect(() => {
+    const aspect = size.width / size.height;
+    // Keep framing stable on mobile portrait: back camera up a bit.
+    // Desktop stays closer for impact.
+    const portrait = aspect < 1;
+    const nextZ = portrait ? 3.35 : 3.0;
+    const nextY = portrait ? 0.05 : 0.04;
+    camera.position.set(0, nextY, nextZ);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+  }, [camera, size.height, size.width]);
+
+  return null;
+}
+
+export function BusinessCardHero() {
+  const [progress, setProgress] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const [flipped, setFlipped] = useState(false);
+  const [introReady, setIntroReady] = useState(false);
+
+  const { orientation, isSupported, permissionState, requestPermission, isIOSPermissionAPI } =
+    useDeviceOrientation();
+
+  const tiltStrength = 0.28; // premium subtle, keep card in-frame
+
+  const deviceTilt = useMemo(() => {
+    if (!isSupported) return { x: 0, y: 0 };
+    if (isIOSPermissionAPI && permissionState !== "granted") return { x: 0, y: 0 };
+
+    const beta = orientation.beta ?? 0; // front/back, [-180..180]
+    const gamma = orientation.gamma ?? 0; // left/right, [-90..90]
+
+    // Normalize and clamp to keep motion premium and nausea-free.
+    const x = clamp(beta, -35, 35) / 35; // -1..1
+    const y = clamp(gamma, -35, 35) / 35; // -1..1
+    return { x: (x * Math.PI) / 14, y: (y * Math.PI) / 14 };
+  }, [isIOSPermissionAPI, isSupported, orientation.beta, orientation.gamma, permissionState]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const t = window.setTimeout(() => setIntroReady(true), 220);
+    return () => window.clearTimeout(t);
+  }, [loaded]);
+
+  const showMotionButton =
+    isSupported && isIOSPermissionAPI && permissionState !== "granted" && permissionState !== "denied";
+
+  return (
+    <div className="relative h-[100svh] w-full overflow-hidden bg-[#05070b] text-white">
+      {/* Background glow */}
+      <div
+        className="pointer-events-none absolute inset-0 opacity-90"
+        style={{
+          background:
+            "radial-gradient(1200px 900px at 55% 45%, rgba(125, 180, 255, 0.22), rgba(0,0,0,0) 60%), radial-gradient(900px 700px at 40% 60%, rgba(255, 165, 245, 0.16), rgba(0,0,0,0) 62%), radial-gradient(900px 700px at 50% 40%, rgba(255, 255, 255, 0.06), rgba(0,0,0,0) 55%)",
+        }}
+      />
+
+      <Canvas
+        className="absolute inset-0"
+        shadows
+        dpr={[1, 2]}
+        camera={{ position: [0, 0.04, 3.0], fov: 40, near: 0.1, far: 50 }}
+        gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
+        onCreated={({ gl }) => {
+          gl.toneMapping = THREE.ACESFilmicToneMapping;
+          gl.toneMappingExposure = 1.45;
+          gl.outputColorSpace = THREE.SRGBColorSpace;
+        }}
+      >
+        <AdaptiveDpr pixelated />
+        <ResponsiveCamera />
+        <Suspense fallback={null}>
+          <LoadingBridge
+            onProgress={(p) => setProgress(p)}
+            onLoaded={() => setLoaded(true)}
+          />
+          <Scene
+            flipped={flipped}
+            interactive={loaded}
+            tiltStrength={tiltStrength}
+            deviceTilt={deviceTilt}
+            onToggleFlip={() => setFlipped((v) => !v)}
+            intro={{ ready: introReady, t: progress }}
+          />
+        </Suspense>
+      </Canvas>
+
+      {/* Minimal loader + buttons-only UI */}
+      <div className="pointer-events-none absolute inset-0">
+        {!loaded && (
+          <div className="absolute left-1/2 top-8 w-[min(360px,calc(100%-48px))] -translate-x-1/2">
+            <div className="h-[10px] w-full rounded-full bg-white/10 backdrop-blur">
+              <div
+                className="h-[10px] rounded-full bg-white/85 transition-[width] duration-200"
+                style={{ width: `${Math.max(6, Math.min(100, progress))}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="absolute bottom-8 left-1/2 flex -translate-x-1/2 flex-col items-center gap-3">
+          {loaded && isIOSPermissionAPI && permissionState === "denied" && (
+            <div className="pointer-events-auto max-w-[280px] rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-center text-xs text-white/70 backdrop-blur">
+              Motion is denied (Safari settings). Pointer tilt still works.
+            </div>
+          )}
+
+          <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2">
+            {loaded && showMotionButton && (
+              <button
+                type="button"
+                onClick={async () => {
+                  await requestPermission();
+                }}
+                className="rounded-full border border-white/15 bg-white/10 px-5 py-2 text-sm font-medium text-white/90 backdrop-blur transition hover:bg-white/15"
+              >
+                Enable motion
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setFlipped((v) => !v)}
+              disabled={!loaded}
+              className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white/90 backdrop-blur transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Flip
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFlipped(false);
+              }}
+              disabled={!loaded}
+              className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-white/80 backdrop-blur transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Vignette */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          boxShadow:
+            "inset 0 0 0 1px rgba(255,255,255,0.05), inset 0 -120px 220px rgba(0,0,0,0.55), inset 0 120px 220px rgba(0,0,0,0.55), inset 120px 0 220px rgba(0,0,0,0.55), inset -120px 0 220px rgba(0,0,0,0.55)",
+        }}
+      />
+    </div>
+  );
+}
+
+
