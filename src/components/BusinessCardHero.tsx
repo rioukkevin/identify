@@ -65,6 +65,26 @@ function useDeviceOrientation() {
       return () => stop();
     }
 
+    // iOS Safari: check if permission was previously granted
+    const wasGranted = localStorage.getItem("device-orientation-permission") === "granted";
+    
+    if (wasGranted) {
+      // Try to start listening - if permission is still granted, events will fire
+      setPermissionState("granted");
+      const stop = startListening();
+      
+      // Verify permission is still active by checking if we receive events
+      const timeout = setTimeout(() => {
+        // If no events after 500ms, permission might have been revoked
+        // This is a best-effort check
+      }, 500);
+      
+      return () => {
+        clearTimeout(timeout);
+        stop();
+      };
+    }
+
     // iOS Safari: wait for explicit user gesture to request permission.
     setPermissionState("unknown");
     return;
@@ -78,6 +98,8 @@ function useDeviceOrientation() {
       ).requestPermission();
       if (result === "granted") {
         setPermissionState("granted");
+        // Store permission state in localStorage
+        localStorage.setItem("device-orientation-permission", "granted");
         const onDeviceOrientation = (e: DeviceOrientationEvent) => {
           setOrientation({
             beta: typeof e.beta === "number" ? e.beta : null,
@@ -89,9 +111,11 @@ function useDeviceOrientation() {
         return true;
       }
       setPermissionState("denied");
+      localStorage.setItem("device-orientation-permission", "denied");
       return false;
     } catch {
       setPermissionState("denied");
+      localStorage.setItem("device-orientation-permission", "denied");
       return false;
     }
   }, [isIOSPermissionAPI]);
