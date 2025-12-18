@@ -562,6 +562,55 @@ export function BusinessCardHero() {
     return () => window.clearTimeout(t);
   }, [loaded]);
 
+  const handleShareVCard = async () => {
+    const vCardContent = `BEGIN:VCARD
+VERSION:3.0
+N:Kévin;RIOU
+FN:RIOU Kévin
+TITLE:CEO
+URL:nare.li
+EMAIL;TYPE=INTERNET:kevin@nare.li
+TEL;TYPE=voice,work,pref:+33618260849
+ADR:;;;Paris;;;France
+END:VCARD`;
+
+    try {
+      // Create a Blob with the vCard content
+      const blob = new Blob([vCardContent], { type: "text/vcard" });
+      const file = new File([blob], "contact.vcf", { type: "text/vcard" });
+
+      // Use Web Share API if available (iOS Safari, etc.)
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: "RIOU Kévin - Contact",
+          text: "Add this contact to your address book",
+        });
+      } else if (navigator.share) {
+        // Fallback: share as text if file sharing not supported
+        await navigator.share({
+          title: "RIOU Kévin - Contact",
+          text: vCardContent,
+        });
+      } else {
+        // Fallback: download the vCard file
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "contact.vcf";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      // User cancelled or error occurred
+      if (error instanceof Error && error.name !== "AbortError") {
+        console.error("Error sharing vCard:", error);
+      }
+    }
+  };
+
   const showMotionButton =
     isSupported && isIOSPermissionAPI && permissionState !== "granted" && permissionState !== "denied";
 
@@ -646,6 +695,14 @@ export function BusinessCardHero() {
               className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white/90 backdrop-blur transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Flip
+            </button>
+            <button
+              type="button"
+              onClick={handleShareVCard}
+              disabled={!loaded}
+              className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white/90 backdrop-blur transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Share
             </button>
           </div>
         </div>
