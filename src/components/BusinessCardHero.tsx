@@ -303,6 +303,10 @@ function Card({
     backMap.wrapS = backMap.wrapT = THREE.ClampToEdgeWrapping;
   }, [backMap, frontMap]);
 
+  const initializedRef = useRef(false);
+  const animationStartTimeRef = useRef<number | null>(null);
+  const ANIMATION_DURATION = 1.0; // 1 seconds
+
   useFrame((state, dt) => {
     const g = group.current;
     if (!g) return;
@@ -325,22 +329,83 @@ function Card({
     const tiltX = deviceTiltX !== 0 ? deviceTiltX : pointerTiltX;
     const tiltY = deviceTiltY !== 0 ? deviceTiltY : pointerTiltY;
 
-    // Intro animation: float in + scale up.
-    const targetScale = (intro.ready ? 1.0 : 0.88) * fitScale;
-    g.scale.x = damp(g.scale.x, targetScale, 10, dt);
-    g.scale.y = damp(g.scale.y, targetScale, 10, dt);
-    g.scale.z = damp(g.scale.z, targetScale, 10, dt);
+    // Intro animation: card comes from top, rotates, and scales up (4 seconds duration)
+    let introProgress = 1.0;
+    const isContentLoaded = intro.t >= 100;
     
-    // Position card at top on mobile
-    const targetY = isMobile 
-      ? (intro.ready ? baseHover + 0.35 : 0.15) // Higher position on mobile
-      : (intro.ready ? baseHover - 0.03 : -0.22);
-    g.position.y = damp(g.position.y, targetY, 6, dt);
-    g.position.z = damp(g.position.z, intro.ready ? 0 : -0.55, 6, dt);
+    if (isContentLoaded && !intro.ready) {
+      // Start animation timer when content is loaded (but before intro.ready)
+      if (animationStartTimeRef.current === null) {
+        animationStartTimeRef.current = state.clock.elapsedTime;
+      }
+      const elapsed = state.clock.elapsedTime - (animationStartTimeRef.current ?? 0);
+      introProgress = Math.min(elapsed / ANIMATION_DURATION, 1.0);
+    } else if (intro.ready) {
+      // Animation complete
+      animationStartTimeRef.current = null;
+      introProgress = 1.0;
+    } else {
+      // Still loading, keep at 0
+      introProgress = 0;
+    }
+    
+    // Smooth ease-in-out for smoother animation
+    const introEase = introProgress < 0.5
+      ? 2 * introProgress * introProgress
+      : 1 - Math.pow(-2 * introProgress + 2, 3) / 2;
+    
+    // Initialize position on first frame when content is loaded
+    if (!initializedRef.current && isContentLoaded) {
+      const startY = isMobile ? 1.2 : 1.0;
+      g.position.set(0, startY, -1.2);
+      g.scale.set(0.3 * fitScale, 0.3 * fitScale, 0.3 * fitScale);
+      g.rotation.set(0.05, 0, 0); // No rotation during intro
+      initializedRef.current = true;
+    }
+    
+    const isAnimationComplete = introProgress >= 1.0;
+    const isAnimating = !isAnimationComplete && introProgress > 0;
+    
+    // Disable base animations during intro for smoother motion
+    const activeBaseHover = isAnimating ? 0 : baseHover;
+    const activeBaseRoll = isAnimating ? 0 : baseRoll;
+    
+    const targetScale = isAnimationComplete
+      ? 1.0 * fitScale 
+      : (0.3 + introEase * 0.7) * fitScale; // Start at 30%, grow to 100%
+    // Smoother damping during animation
+    const scaleDamping = isAnimating ? 5 : 8;
+    g.scale.x = damp(g.scale.x, targetScale, scaleDamping, dt);
+    g.scale.y = damp(g.scale.y, targetScale, scaleDamping, dt);
+    g.scale.z = damp(g.scale.z, targetScale, scaleDamping, dt);
+    
+    // Position: start from top, animate to final position
+    const startY = isMobile ? 1.2 : 1.0; // Start higher on mobile
+    const finalY = isMobile 
+      ? (activeBaseHover + 0.35) // Higher position on mobile
+      : (activeBaseHover - 0.03);
+    const targetY = isAnimationComplete
+      ? finalY 
+      : startY - (startY - finalY) * introEase;
+    // Smoother damping during animation
+    const positionDamping = isAnimating ? 4 : 7;
+    g.position.y = damp(g.position.y, targetY, positionDamping, dt);
+    
+    const startZ = -1.2; // Start further back
+    const finalZ = 0;
+    const targetZ = isAnimationComplete ? finalZ : startZ - (startZ - finalZ) * introEase;
+    g.position.z = damp(g.position.z, targetZ, positionDamping, dt);
 
-    g.rotation.y = damp(g.rotation.y, flipTarget + tiltY * 0.25, 10, dt);
-    g.rotation.x = damp(g.rotation.x, tiltX + baseHover * 0.15, 10, dt);
-    g.rotation.z = damp(g.rotation.z, rotateTarget + baseRoll + pointer.x * 0.04, 10, dt);
+    // Disable tilt during animation for smoother motion
+    const activeTiltY = isAnimating ? 0 : tiltY * 0.25;
+    const activeTiltX = isAnimating ? 0 : tiltX;
+    const activePointerRoll = isAnimating ? 0 : pointer.x * 0.04;
+    
+    // Smoother rotation damping during animation
+    const rotationDamping = isAnimating ? 6 : 10;
+    g.rotation.y = damp(g.rotation.y, flipTarget + activeTiltY, rotationDamping, dt);
+    g.rotation.x = damp(g.rotation.x, activeTiltX + activeBaseHover * 0.15, rotationDamping, dt);
+    g.rotation.z = damp(g.rotation.z, rotateTarget + activeBaseRoll + activePointerRoll, rotationDamping, dt);
 
     if (edgeMaterial.current) {
       edgeMaterial.current.emissiveIntensity = 0.22 + baseHover * 0.6;
@@ -625,11 +690,7 @@ END:VCARD`;
     <div className="relative h-[100svh] w-full overflow-hidden bg-[#05070b] text-white">
       {/* Background glow */}
       <div
-        className="pointer-events-none absolute inset-0 opacity-90"
-        style={{
-          background:
-            "radial-gradient(1200px 900px at 55% 45%, rgba(125, 180, 255, 0.22), rgba(0,0,0,0) 60%), radial-gradient(900px 700px at 40% 60%, rgba(255, 165, 245, 0.16), rgba(0,0,0,0) 62%), radial-gradient(900px 700px at 50% 40%, rgba(255, 255, 255, 0.06), rgba(0,0,0,0) 55%)",
-        }}
+        className="pointer-events-none absolute inset-0 opacity-90 bg-[#05070b]"
       />
 
       <Canvas
@@ -665,16 +726,6 @@ END:VCARD`;
 
       {/* Minimal loader + buttons-only UI */}
       <div className="pointer-events-none absolute inset-0">
-        {!loaded && (
-          <div className="absolute left-1/2 top-8 w-[min(360px,calc(100%-48px))] -translate-x-1/2">
-            <div className="h-[10px] w-full rounded-full bg-white/10 backdrop-blur">
-              <div
-                className="h-[10px] rounded-full bg-white/85 transition-[width] duration-200"
-                style={{ width: `${Math.max(6, Math.min(100, progress))}%` }}
-              />
-            </div>
-          </div>
-        )}
 
         <div className="absolute bottom-8 left-1/2 flex -translate-x-1/2 flex-col items-center gap-3">
           {loaded && isIOSPermissionAPI && permissionState === "denied" && (
