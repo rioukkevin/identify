@@ -224,8 +224,8 @@ function Card({
     const sW = viewport.width / (cardW * margin);
     const sH = viewport.height / (cardH * margin);
     const baseScale = clamp(Math.min(sW, sH), 0.6, 1.25);
-    // 120% zoom on mobile
-    return isMobile ? baseScale * 1.2 : baseScale;
+    // 100% zoom on mobile (no additional scaling)
+    return baseScale;
   }, [cardH, cardW, viewport.height, viewport.width]);
 
   useEffect(() => {
