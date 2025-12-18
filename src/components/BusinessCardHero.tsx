@@ -193,10 +193,13 @@ function Card({
     // viewport.{width,height} are in world-units at z=0 for the current camera.
     // We fit the *rotating* card with a generous margin, especially in portrait.
     const portrait = viewport.width < viewport.height;
+    const isMobile = viewport.width < 768 || portrait; // Mobile detection
     const margin = portrait ? 1.55 : 1.35; // more headroom in portrait to avoid side cropping when tilted
     const sW = viewport.width / (cardW * margin);
     const sH = viewport.height / (cardH * margin);
-    return clamp(Math.min(sW, sH), 0.6, 1.25);
+    const baseScale = clamp(Math.min(sW, sH), 0.6, 1.25);
+    // 120% zoom on mobile
+    return isMobile ? baseScale * 1.2 : baseScale;
   }, [cardH, cardW, viewport.height, viewport.width]);
 
   useEffect(() => {
@@ -302,6 +305,9 @@ function Card({
     const g = group.current;
     if (!g) return;
 
+    const isMobile = viewport.width < 768 || viewport.width < viewport.height;
+    const motionMultiplier = isMobile ? 3.5 : 1; // 3.5x on mobile
+
     const flipTarget = flipped ? Math.PI : 0;
     const baseHover = Math.sin(state.clock.elapsedTime * 0.9) * 0.03;
     const baseRoll = Math.sin(state.clock.elapsedTime * 0.7) * 0.03;
@@ -309,15 +315,24 @@ function Card({
     const pointerTiltX = -pointer.y * tiltStrength;
     const pointerTiltY = pointer.x * tiltStrength;
 
-    const tiltX = deviceTilt.x !== 0 ? deviceTilt.x * tiltStrength : pointerTiltX;
-    const tiltY = deviceTilt.y !== 0 ? deviceTilt.y * tiltStrength : pointerTiltY;
+    // Apply motion multiplier on mobile for device tilt
+    const deviceTiltX = deviceTilt.x !== 0 ? deviceTilt.x * tiltStrength * motionMultiplier : 0;
+    const deviceTiltY = deviceTilt.y !== 0 ? deviceTilt.y * tiltStrength * motionMultiplier : 0;
+    
+    const tiltX = deviceTiltX !== 0 ? deviceTiltX : pointerTiltX;
+    const tiltY = deviceTiltY !== 0 ? deviceTiltY : pointerTiltY;
 
     // Intro animation: float in + scale up.
     const targetScale = (intro.ready ? 1.0 : 0.88) * fitScale;
     g.scale.x = damp(g.scale.x, targetScale, 10, dt);
     g.scale.y = damp(g.scale.y, targetScale, 10, dt);
     g.scale.z = damp(g.scale.z, targetScale, 10, dt);
-    g.position.y = damp(g.position.y, intro.ready ? baseHover - 0.03 : -0.22, 6, dt);
+    
+    // Position card at top on mobile
+    const targetY = isMobile 
+      ? (intro.ready ? baseHover + 0.35 : 0.15) // Higher position on mobile
+      : (intro.ready ? baseHover - 0.03 : -0.22);
+    g.position.y = damp(g.position.y, targetY, 6, dt);
     g.position.z = damp(g.position.z, intro.ready ? 0 : -0.55, 6, dt);
 
     g.rotation.y = damp(g.rotation.y, flipTarget + tiltY * 0.25, 10, dt);
@@ -405,17 +420,21 @@ function Flare({
   deviceTilt: { x: number; y: number };
 }) {
   const lightRef = useRef<THREE.SpotLight>(null);
-  const { pointer } = useThree();
+  const { pointer, viewport } = useThree();
   const baseX = -2.4;
 
   useFrame((state, dt) => {
     if (!lightRef.current) return;
 
+    const isMobile = viewport.width < 768 || viewport.width < viewport.height;
+    const motionMultiplier = isMobile ? 3.5 : 1; // 3.5x on mobile
+
     const pointerTiltY = pointer.x * tiltStrength;
-    const tiltY = deviceTilt.y !== 0 ? deviceTilt.y * tiltStrength : pointerTiltY;
+    const deviceTiltY = deviceTilt.y !== 0 ? deviceTilt.y * tiltStrength * motionMultiplier : 0;
+    const tiltY = deviceTiltY !== 0 ? deviceTiltY : pointerTiltY;
 
     const targetX = baseX + tiltY * 3;
-    lightRef.current.position.x = damp(lightRef.current.position.x * 2, targetX, 8, dt);
+    lightRef.current.position.x = damp(lightRef.current.position.x, targetX, 8, dt);
   });
 
   return (
@@ -498,11 +517,13 @@ function ResponsiveCamera() {
 
   useEffect(() => {
     const aspect = size.width / size.height;
+    const isMobile = size.width < 768 || aspect < 1;
     // Keep framing stable on mobile portrait: back camera up a bit.
     // Desktop stays closer for impact.
     const portrait = aspect < 1;
     const nextZ = portrait ? 3.35 : 3.0;
-    const nextY = portrait ? 0.05 : 0.04;
+    // Move camera down on mobile to position card at top
+    const nextY = isMobile ? (portrait ? -0.15 : -0.12) : (portrait ? 0.05 : 0.04);
     camera.position.set(0, nextY, nextZ);
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
