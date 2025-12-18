@@ -142,8 +142,8 @@ function Card({
   const edgeMaterial = useRef<THREE.MeshPhysicalMaterial>(null);
   const { pointer, viewport } = useThree();
 
-  const frontMap = useTexture("/back.webp");
-  const backMap = useTexture("/front2.png");
+  const frontMap = useTexture("/card-front.png");
+  const backMap = useTexture("/card-back.png");
   const [frontMapFitted, setFrontMapFitted] = useState<THREE.Texture | null>(null);
   const [backMapFitted, setBackMapFitted] = useState<THREE.Texture | null>(null);
 
@@ -625,16 +625,6 @@ export function BusinessCardHero() {
               className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white/90 backdrop-blur transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Flip
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setFlipped(false);
-              }}
-              disabled={!loaded}
-              className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-white/80 backdrop-blur transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Reset
             </button>
           </div>
         </div>
