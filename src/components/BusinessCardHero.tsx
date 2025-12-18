@@ -125,6 +125,7 @@ function LoadingBridge({
 
 function Card({
   flipped,
+  rotated,
   interactive,
   tiltStrength,
   deviceTilt,
@@ -132,6 +133,7 @@ function Card({
   intro,
 }: {
   flipped: boolean;
+  rotated: boolean;
   interactive: boolean;
   tiltStrength: number;
   deviceTilt: { x: number; y: number };
@@ -308,7 +310,8 @@ function Card({
     const isMobile = viewport.width < 768 || viewport.width < viewport.height;
     const motionMultiplier = isMobile ? 3.5 : 1; // 3.5x on mobile
 
-    const flipTarget = flipped ? Math.PI : 0;
+    const flipTarget = flipped ? Math.PI : 0; // Y-axis: show back of card
+    const rotateTarget = rotated ? Math.PI : 0; // Z-axis: rotate for other person
     const baseHover = Math.sin(state.clock.elapsedTime * 0.9) * 0.03;
     const baseRoll = Math.sin(state.clock.elapsedTime * 0.7) * 0.03;
 
@@ -337,7 +340,7 @@ function Card({
 
     g.rotation.y = damp(g.rotation.y, flipTarget + tiltY * 0.25, 10, dt);
     g.rotation.x = damp(g.rotation.x, tiltX + baseHover * 0.15, 10, dt);
-    g.rotation.z = damp(g.rotation.z, baseRoll + pointer.x * 0.04, 10, dt);
+    g.rotation.z = damp(g.rotation.z, rotateTarget + baseRoll + pointer.x * 0.04, 10, dt);
 
     if (edgeMaterial.current) {
       edgeMaterial.current.emissiveIntensity = 0.22 + baseHover * 0.6;
@@ -451,6 +454,7 @@ function Flare({
 
 function Scene({
   flipped,
+  rotated,
   interactive,
   tiltStrength,
   deviceTilt,
@@ -458,6 +462,7 @@ function Scene({
   intro,
 }: {
   flipped: boolean;
+  rotated: boolean;
   interactive: boolean;
   tiltStrength: number;
   deviceTilt: { x: number; y: number };
@@ -502,6 +507,7 @@ function Scene({
 
       <Card
         flipped={flipped}
+        rotated={rotated}
         interactive={interactive}
         tiltStrength={tiltStrength}
         deviceTilt={deviceTilt}
@@ -536,6 +542,7 @@ export function BusinessCardHero() {
   const [progress, setProgress] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [flipped, setFlipped] = useState(false);
+  const [rotated, setRotated] = useState(false);
   const [introReady, setIntroReady] = useState(false);
 
   const { orientation, isSupported, permissionState, requestPermission, isIOSPermissionAPI } =
@@ -646,6 +653,7 @@ END:VCARD`;
           />
           <Scene
             flipped={flipped}
+            rotated={rotated}
             interactive={loaded}
             tiltStrength={tiltStrength}
             deviceTilt={deviceTilt}
@@ -690,7 +698,7 @@ END:VCARD`;
 
             <button
               type="button"
-              onClick={() => setFlipped((v) => !v)}
+              onClick={() => setRotated((v) => !v)}
               disabled={!loaded}
               className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white/90 backdrop-blur transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
             >
