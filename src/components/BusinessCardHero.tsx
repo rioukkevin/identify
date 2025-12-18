@@ -441,7 +441,7 @@ function Flare({
     <spotLight
       ref={lightRef}
       position={[baseX, 2.2, 3.2]}
-      intensity={2.15}
+      intensity={2.47}
       angle={0.5}
       penumbra={0.85}
       color="#ffd7fa"
@@ -468,11 +468,11 @@ function Scene({
     <>
       <color attach="background" args={["#05070b"]} />
 
-      <ambientLight intensity={0.6} />
-      <hemisphereLight intensity={0.35} color="#cfe0ff" groundColor="#0a0c10" />
+      <ambientLight intensity={0.69} />
+      <hemisphereLight intensity={0.40} color="#cfe0ff" groundColor="#0a0c10" />
       <directionalLight
         position={[3.8, 3.2, 2.6]}
-        intensity={2.2}
+        intensity={2.53}
         color="#d9e8ff"
         castShadow
         shadow-mapSize-width={4096}
@@ -488,7 +488,7 @@ function Scene({
         shadow-normalBias={0.02}
       />
       <Flare tiltStrength={tiltStrength} deviceTilt={deviceTilt} />
-      <pointLight position={[0, 0.25, 2.4]} intensity={1.15} color="#8fb7ff" />
+      <pointLight position={[0, 0.25, 2.4]} intensity={1.32} color="#8fb7ff" />
 
       <Sparkles
         count={36}
